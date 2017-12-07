@@ -1,7 +1,14 @@
 import request from 'request-promise-native';
+import ProgressBar from 'progress';
 import fs from 'fs-extra';
 
 import clanMembers from './data/destiny-clan-members';
+
+const PROGRESS_BAR_OPTIONS = {
+    complete: '=',
+    incomplete: ' ',
+    width: 50,
+};
 
 const headerRow = [
     'Match ID',
@@ -43,12 +50,29 @@ const headerRow = [
 
         console.log(`Fetching info for: ${name}...`);
 
-        let sessionInfo = await request({
-            url: `http://destinytracker.com/d2/api/profile/${network}/${id}/sessions`,
-            json: true,
-        });
+        let sessionInfo;
+        try {
+            sessionInfo = await request({
+                url: `http://destinytracker.com/d2/api/profile/${network}/${id}/sessions`,
+                json: true,
+            });
+        } catch (err) {
+            console.error(`Failed to lookup session for ${name}.`);
+            console.error(`Skipping data for player ${name}. Perhaps retry later.`);
+            continue;
+        }
 
         await fs.writeFile(`./data/out/${name}.csv`, headerRow, 'utf8');
+
+        let progressBarOptions = Object.assign({
+            total: sessionInfo.sessions.reduce((matchCount, session) => {
+                return matchCount + session.matches.length;
+            }, 0)
+        }, PROGRESS_BAR_OPTIONS);
+
+        let matchFailures = [];
+
+        let bar = new ProgressBar('    Matches [:bar] :percent of :total; eta :etas', progressBarOptions);
 
         for (let session of sessionInfo.sessions) {
             for (let match of session.matches) {
@@ -59,10 +83,16 @@ const headerRow = [
                 try {
                     matchInfo = JSON.parse(await fs.readFile(cacheFile, 'utf8'));
                 } catch (err) {
-                    matchInfo = await request({
-                        url: `http://destinytracker.com/d2/api/pgcr/${matchId}`,
-                        json: true,
-                    });
+                    try {
+                        matchInfo = await request({
+                            url: `http://destinytracker.com/d2/api/pgcr/${matchId}`,
+                            json: true,
+                        });
+                    } catch (err) {
+                        matchFailures.push(matchId);
+                        bar.tick();
+                        continue;
+                    }
 
                     await fs.writeFile(cacheFile, JSON.stringify(matchInfo), 'utf8');
                 }
@@ -133,7 +163,13 @@ const headerRow = [
 
                 await fs.appendFile(`./data/out/${name}.csv`, row, 'utf8');
                 await fs.appendFile(`./data/out/__clan__.csv`, row, 'utf8');
+
+                bar.tick();
             }
+        }
+
+        if (matchFailures.length) {
+            console.error(`Failed to download matches: ${matchFailures.join(', ')}. Perhaps retry later.`)
         }
     }
 })();
